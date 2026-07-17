@@ -1,0 +1,102 @@
+name: Startup WhatsApp Monitor
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Runs every hour at minute 17
+    - cron: "17 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: startup-whatsapp-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monitor Startup Profiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      WASENDER_API_KEY: ${{ secrets.WASENDER_API_KEY }}
+      WHATSAPP_TO_NUMBER: ${{ secrets.WHATSAPP_TO_NUMBER }}
+
+      MONITOR_URL: "https://tg10x.com/explore/startup-founders/india"
+      BASE_URL: "https://tg10x.com"
+
+      STATE_FILE: "data/seen_items.json"
+
+      # false means existing profiles will not be sent
+      # during the first run.
+      FIRST_RUN_SEND_EXISTING: "false"
+
+      # Prevent too many messages in one run.
+      MAX_NOTIFICATIONS_PER_RUN: "10"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Validate GitHub secrets
+        shell: bash
+        run: |
+          if [ -z "${WASENDER_API_KEY:-}" ]; then
+            echo "ERROR: WASENDER_API_KEY is missing."
+            exit 1
+          fi
+
+          if [ -z "${WHATSAPP_TO_NUMBER:-}" ]; then
+            echo "ERROR: WHATSAPP_TO_NUMBER is missing."
+            exit 1
+          fi
+
+          echo "Required GitHub secrets are available."
+
+      - name: Run startup monitor
+        run: |
+          python run.py
+
+      - name: Save monitoring state
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f "data/seen_items.json" ]; then
+            echo "State file does not exist. Nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "startup-monitor-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add data/seen_items.json
+
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update startup monitoring state"
+
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+
+          git push origin "HEAD:${GITHUB_REF_NAME}"
